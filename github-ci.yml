@@ -1,0 +1,95 @@
+stages:
+  - lint
+  - build
+  - test
+  - publish
+  - deploy
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: ""
+
+# Линтинг и форматирование кода
+lint:
+  stage: lint
+  image: python:3.12
+  script:
+    - pip install flake8 black black[jupyter]
+    - flake8 .
+    - black --check .
+  only:
+    - main
+    - merge_requests
+
+# Сборка Docker-образа и публикация в Docker Registry
+build_docker:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_DRIVER: overlay2
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    - echo "image building..."
+    - docker build -t "$CI_REGISTRY_IMAGE:latest" .
+    - docker push "$CI_REGISTRY_IMAGE:latest"
+  only:
+    - main
+
+# Сборка Python-пакета и публикация в PyPI Registry
+build_pypi:
+  stage: build
+  image: python:3.12
+  script:
+    - echo "pypi package publishing..."
+    - pip install setuptools wheel twine
+    - python setup.py sdist bdist_wheel
+    - twine upload --repository-url "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/pypi/" dist/* -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" --verbose
+  only:
+    - main
+
+# Генерация документации с помощью Quarto
+build_docs:
+  stage: build
+  image: ghcr.io/quarto-dev/quarto:1.6.24
+  script:
+    - mkdir -p .docs
+    - quarto render eda.ipynb --output index.html
+    - mv * .docs
+    - mv .docs docs
+  artifacts:
+    paths:
+      - docs/
+  only:
+    - main
+
+# Публикация на GitLab Pages
+pages:
+  stage: deploy
+  image: busybox
+  script:
+    - cp -r docs/ public/
+    - echo "The site will be deployed to $CI_PAGES_URL"
+  artifacts:
+    paths:
+      - public
+  only:
+    - main
+
+# Тестирование
+test:
+  image: docker:latest
+  services:
+    - docker:dind
+  stage: test
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    - echo "testing..."
+    - docker run $CI_REGISTRY_IMAGE:latest pytest
+  only:
+    - main
+    - merge_requests
+
